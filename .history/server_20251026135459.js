@@ -1,6 +1,5 @@
-// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.1 - CON RUTA TEMPORAL SETUP) ==============\n
+// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.0 - SEGURA Y ROBUSTA) ==============\n
 // --- IMPLEMENTA MEJORAS DE NIVEL 1 (JWT) Y NIVEL 3 (VALIDACIÓN Y RPC) ---
-// --- INCLUYE RUTA TEMPORAL /api/setup-admin PARA ARREGLAR HASH ---
 
 // 1. IMPORTACIÓN DE MÓDULOS
 require('dotenv').config();
@@ -54,7 +53,7 @@ const clientPatchSchema = z.object({
 const citaSchema = z.object({
     fecha_hora: z.string().datetime("Debe ser una fecha y hora ISO válida"),
     descripcion: z.string().optional(),
-    estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada']).optional(), // Estado opcional al crear
+    estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada']),
     duracion_minutos: z.number().int().positive("La duración debe ser un número positivo"),
     doctor_id: z.number().int(),
     // Datos del cliente (existente o nuevo)
@@ -89,7 +88,6 @@ const authenticateToken = (req, res, next) => {
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            console.error("Error verificando token:", err.message); // Log de error
             return res.status(403).json({ error: 'Acceso prohibido: Token no válido o expirado.' });
         }
         req.user = user; // Guarda la info del usuario (del token) en el request
@@ -103,41 +101,28 @@ const authenticateToken = (req, res, next) => {
 // --- Ruta de Login (Pública) ---
 app.post('/api/login', async (req, res) => {
     try {
-        console.log("Intento de login recibido para:", req.body.email); // Log
         // 1. Validar el input
         const { email, password } = loginSchema.parse(req.body);
 
         // 2. Buscar al usuario en la BD
-        console.log(`Buscando usuario: ${email}`); // Log
-        const { data: user, error: dbError } = await supabase
+        const { data: user, error } = await supabase
             .from('usuarios')
             .select('id, email, password_hash, nombre, rol')
             .eq('email', email)
             .single();
 
-        if (dbError) {
-             console.error("Error de DB buscando usuario:", dbError.message); // Log
-             // No devolver el error de DB directamente al usuario por seguridad
-             return res.status(401).json({ error: 'Credenciales inválidas.' });
-        }
-        if (!user) {
-            console.log(`Usuario no encontrado: ${email}`); // Log
+        if (error || !user) {
             return res.status(401).json({ error: 'Credenciales inválidas.' });
         }
-        console.log(`Usuario encontrado: ${user.email}, hash: ${user.password_hash.substring(0,10)}...`); // Log
 
         // 3. Comparar la contraseña
-        console.log("Comparando contraseña..."); // Log
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
-        console.log(`Resultado de comparación: ${isPasswordValid}`); // Log
 
         if (!isPasswordValid) {
-            console.log(`Contraseña inválida para ${email}`); // Log
             return res.status(401).json({ error: 'Credenciales inválidas.' });
         }
 
         // 4. Generar el JWT
-        console.log("Generando token JWT..."); // Log
         const tokenPayload = {
             id: user.id,
             email: user.email,
@@ -145,7 +130,6 @@ app.post('/api/login', async (req, res) => {
             rol: user.rol
         };
         const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' }); // Token expira en 8 horas
-        console.log(`Token generado para ${email}: ${token.substring(0,10)}...`); // Log
 
         // 5. Enviar el token y datos del usuario
         res.json({
@@ -160,57 +144,12 @@ app.post('/api/login', async (req, res) => {
 
     } catch (error) {
         if (error instanceof z.ZodError) {
-            console.error("Error de validación Zod en login:", error.errors); // Log
             return res.status(400).json({ error: 'Datos de login inválidos', details: error.errors });
         }
-        console.error("Error general en /api/login:", error.message); // Log
+        console.error("Error en login:", error.message);
         res.status(500).json({ error: 'Error interno del servidor.' });
     }
 });
-
-// ==========================================
-// RUTA TEMPORAL PARA CREAR/ACTUALIZAR ADMIN
-// ¡¡ELIMINAR DESPUÉS DE USARLA UNA VEZ!!
-// ==========================================
-app.post('/api/setup-admin', async (req, res) => {
-    const adminEmail = 'admin@vintex.com';
-    const adminPassword = 'admin123'; // La contraseña que queremos establecer
-
-    try {
-        console.log(`[SETUP-ADMIN] Intentando configurar/actualizar usuario: ${adminEmail}`);
-
-        // Hashear la contraseña de forma segura
-        const passwordHash = await bcrypt.hash(adminPassword, 10); // 10 rondas de salt
-        console.log(`[SETUP-ADMIN] Contraseña hasheada: ${passwordHash.substring(0, 10)}...`);
-
-        // Intentar insertar o actualizar (upsert) el usuario
-        const { data, error } = await supabase
-            .from('usuarios')
-            .upsert({
-                email: adminEmail,
-                password_hash: passwordHash,
-                nombre: 'Admin Principal', // Asegúrate de que los campos coincidan con tu tabla
-                rol: 'admin'
-            }, {
-                onConflict: 'email' // Si el email ya existe, actualiza su hash y otros datos
-            })
-            .select()
-            .single();
-
-        if (error) {
-            console.error('[SETUP-ADMIN] Error durante upsert:', error);
-            throw error;
-        }
-
-        console.log('[SETUP-ADMIN] Usuario admin configurado/actualizado exitosamente:', data);
-        res.status(200).json({ message: 'Usuario admin configurado/actualizado exitosamente.', user: data });
-
-    } catch (error) {
-        console.error("[SETUP-ADMIN] Error grave en /api/setup-admin:", error.message);
-        res.status(500).json({ error: 'Error interno del servidor al configurar admin.', details: error.message });
-    }
-});
-// --- FIN DE LA RUTA TEMPORAL ---
 
 
 // --- RUTAS PROTEGIDAS (Requieren Token) ---
@@ -220,12 +159,12 @@ app.get('/api/initial-data', authenticateToken, async (req, res) => {
     try {
         // req.user está disponible gracias al middleware
         console.log(`Usuario ${req.user.email} solicitando datos iniciales.`);
-
+        
         const [doctorsRes, appointmentsRes, clientsRes, chatHistoryRes] = await Promise.all([
             supabase.from('doctores').select('*').order('id', { ascending: true }),
             supabase.from('citas').select(`id, fecha_hora, descripcion, estado, duracion_minutos, cliente: clientes (id, nombre, dni), doctor: doctores (id, nombre)`).order('fecha_hora', { ascending: true }),
             supabase.from('clientes').select('*').order('nombre', { ascending: true }),
-            supabase.from('n8n_chat_histories').select('session_id, message').order('id', { ascending: false }).limit(200) // Ordenar por ID descendente para ver los más recientes
+            supabase.from('n8n_chat_histories').select('session_id, message').order('id', { ascending: false }).limit(200)
         ]);
 
         if (doctorsRes.error) throw doctorsRes.error;
@@ -274,7 +213,6 @@ app.patch('/api/clients/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     try {
         // 1. Validar (Nivel 3.1)
-        // Permitimos actualizar nombre y teléfono además de los booleanos
         const updates = clientPatchSchema.parse(req.body);
 
         // 2. Actualizar
@@ -302,13 +240,12 @@ app.patch('/api/clients/:id', authenticateToken, async (req, res) => {
 app.post('/api/citas', authenticateToken, async (req, res) => {
     try {
         // 1. Validar (Nivel 3.1)
-        const {
-            fecha_hora, descripcion, doctor_id, duracion_minutos, estado, // Añadido estado aquí
-            cliente_id, new_client_name, new_client_dni, new_client_telefono
+        const { 
+            fecha_hora, descripcion, doctor_id, duracion_minutos,
+            cliente_id, new_client_name, new_client_dni, new_client_telefono 
         } = citaSchema.parse(req.body);
 
         let citaData;
-        const estadoCita = estado || 'programada'; // Usar estado si viene, sino 'programada'
 
         // 2. Lógica de negocio (Nivel 3.2 - RPC)
         if (cliente_id) {
@@ -318,7 +255,7 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
                 .insert({
                     fecha_hora,
                     descripcion,
-                    estado: estadoCita, // Usar el estado validado o por defecto
+                    estado: 'programada',
                     duracion_minutos,
                     doctor_id,
                     cliente_id
@@ -337,31 +274,19 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
                 p_cliente_dni: new_client_dni,
                 p_cliente_nombre: new_client_name,
                 p_cliente_telefono: new_client_telefono
-                // La RPC ya establece el estado como 'programada' por defecto
             });
-
+            
             if (error) throw error;
             if (!data || data.length === 0) throw new Error("La función RPC no devolvió la cita creada.");
-
-            citaData = data[0]; // rpc devuelve un array, tomamos el primer elemento
-
-            // Si se especificó un estado diferente al crear con RPC, lo actualizamos ahora
-            if (estadoCita !== 'programada') {
-                 const { data: updatedCita, error: updateError } = await supabase
-                    .from('citas')
-                    .update({ estado: estadoCita })
-                    .eq('id', citaData.id)
-                    .select()
-                    .single();
-                 if (updateError) throw updateError;
-                 citaData = updatedCita;
-            }
-
+            
+            // rpc devuelve un array, tomamos el primer elemento
+            citaData = data[0]; 
         } else {
             return res.status(400).json({ error: 'Debe proporcionar un cliente_id o datos de nuevo cliente (DNI).' });
         }
-
+        
         // 3. Obtener datos completos para devolver al frontend
+        // (La cita devuelta por RPC o insert ya es completa, pero si no lo fuera, aquí la buscaríamos)
         const { data: fullCita, error: selectError } = await supabase
             .from('citas')
             .select(`id, fecha_hora, descripcion, estado, duracion_minutos, cliente: clientes (id, nombre, dni), doctor: doctores (id, nombre)`)
@@ -404,9 +329,9 @@ app.patch('/api/citas/:id', authenticateToken, async (req, res) => {
             .select(`id, fecha_hora, descripcion, estado, duracion_minutos, cliente: clientes (id, nombre, dni), doctor: doctores (id, nombre)`)
             .eq('id', data.id)
             .single();
-
+        
         if (selectError) throw selectError;
-
+        
         res.status(200).json(fullCita);
 
     } catch (error) {
@@ -435,4 +360,3 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor de Vintex Clinic (Seguro) escuchando en http://localhost:${port}`);
 });
-
