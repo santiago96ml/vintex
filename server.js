@@ -1,13 +1,13 @@
-// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.3) =============
+// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.4) =============
 //
-// CAMBIOS v2.3 (Oct 27, 2025):
-// - Se actualizó el endpoint de /api/login para usar 'email' en lugar de 'username'.
-// - Se cambió la llamada RPC a 'get_user_by_email' para alinearla con la BD.
-//
-// CAMBIOS v2.2 (Oct 26, 2025):
-// - Corrección de zona horaria (UTC/Local) en creación/actualización de citas.
-// - Endpoint GET /api/doctores implementado.
-// - Endpoint PUT /api/doctores/:id implementado (editar horario, especialidad, estado).
+// CAMBIOS v2.4 (Oct 27, 2025):
+// - ALINEACIÓN COMPLETA CON ESQUEMA DE BD:
+// - CLIENTES: Eliminada la columna 'email' de GET y POST.
+// - DOCTORES: Renombradas columnas a 'horario_inicio', 'horario_fin', 'activo'.
+// - CITAS:
+//   - Renombrado estado 'pendiente' a 'programada' (y añadido 'no_asistio').
+//   - Cambiado Zod schema de 'fecha_hora' para aceptar un string sin timezone
+//     (para coincidir con la columna 'timestamp without time zone').
 //
 // ========================================================================
 
@@ -18,7 +18,7 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { z } = require('zod'); // Importar Zod para validación
+const { z } = require('zod');
 
 // 2. CONFIGURACIÓN INICIAL
 const app = express();
@@ -40,25 +40,25 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // 3. MIDDLEWARE
-app.use(cors()); // Habilitar CORS para todas las rutas
-app.use(express.json()); // Habilitar parsing de JSON
+app.use(cors());
+app.use(express.json());
 
 // --- Middleware de Autenticación (authenticateToken) ---
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Formato "Bearer TOKEN"
+    const token = authHeader && authHeader.split(' ')[1]; 
 
     if (token == null) {
-        return res.status(401).json({ error: 'Token no proporcionado' }); // No hay token
+        return res.status(401).json({ error: 'Token no proporcionado' });
     }
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
             console.warn("Token JWT inválido:", err.message);
-            return res.status(403).json({ error: 'Token inválido' }); // Token inválido (expirado, etc.)
+            return res.status(403).json({ error: 'Token inválido' });
         }
-        req.user = user; // Almacena info del usuario (ej. { id: 1, rol: 'admin' })
-        next(); // Pasa al siguiente middleware o al endpoint
+        req.user = user; 
+        next();
     });
 };
 
@@ -67,12 +67,10 @@ const authenticateToken = (req, res, next) => {
 // ============================================
 
 // --- Endpoint de Login ---
-// CAMBIO v2.3: Se actualizó para usar 'email' en lugar de 'username'
 app.post('/api/login', async (req, res) => {
     try {
-        // 1. Validar el cuerpo de la solicitud
         const schema = z.object({
-            email: z.string().email({ message: "Email inválido" }), // CAMBIO: de username a email
+            email: z.string().email({ message: "Email inválido" }),
             password: z.string().min(1, { message: "La contraseña es requerida" })
         });
 
@@ -81,10 +79,9 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ error: 'Datos de login inválidos', details: validatedData.error.errors });
         }
 
-        const { email, password } = validatedData.data; // CAMBIO: de username a email
+        const { email, password } = validatedData.data;
 
-        // 2. Usar RPC para obtener el usuario de forma segura
-        // CAMBIO: de 'get_user_by_username' a 'get_user_by_email'
+        // Usar RPC (get_user_by_email)
         const { data, error } = await supabase.rpc('get_user_by_email', { p_email: email });
 
         if (error) {
@@ -95,33 +92,20 @@ app.post('/api/login', async (req, res) => {
         if (!data || data.length === 0) {
             return res.status(404).json({ error: 'Usuario no encontrado' });
         }
-
         const user = data[0];
 
-        // 3. Verificar la contraseña
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
         if (!isPasswordValid) {
             return res.status(401).json({ error: 'Credenciales inválidas' });
         }
 
-        // 4. Generar el JWT
-        const tokenPayload = {
-            id: user.id,
-            rol: user.rol,
-            nombre: user.nombre
-        };
-
+        const tokenPayload = { id: user.id, rol: user.rol, nombre: user.nombre };
         const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' });
 
-        // 5. Enviar respuesta exitosa
         res.status(200).json({
             message: 'Login exitoso',
             token: token,
-            user: {
-                id: user.id,
-                nombre: user.nombre,
-                rol: user.rol
-            }
+            user: { id: user.id, nombre: user.nombre, rol: user.rol }
         });
 
     } catch (error) {
@@ -132,54 +116,29 @@ app.post('/api/login', async (req, res) => {
 
 
 // --- [TEMP] Endpoint de Setup/Reset de Contraseña de Admin ---
-// Este endpoint crea o actualiza un usuario admin con un hash de contraseña conocido.
-// Es una herramienta temporal de "rescate".
 app.post('/api/setup-admin', async (req, res) => {
-    // ¡Asegura este endpoint en producción!
-    // Por ahora, solo valida un 'secret_key' simple desde el body.
     const { email, password, secret_key } = req.body;
-
-    // Clave simple para evitar ejecuciones accidentales.
-    // En un mundo real, esto estaría protegido por IP o un token de admin maestro.
     if (secret_key !== "VINTEX_SETUP_2025") {
         return res.status(403).json({ error: "Clave de setup incorrecta." });
     }
-
     if (!email || !password) {
         return res.status(400).json({ error: "Email y password son requeridos." });
     }
-
     try {
-        // Generar el hash de la contraseña
         const salt = await bcrypt.genSalt(10);
         const password_hash = await bcrypt.hash(password, salt);
-
-        // Define los datos del usuario admin/secretaria
         const userData = {
             email: email,
             password_hash: password_hash,
             nombre: 'Admin Vintex',
-            rol: 'admin' // O 'secretaria' según necesites
+            rol: 'admin' 
         };
-
-        // Intenta insertar o actualizar (upsert) el usuario
-        // 'onConflict: 'email'' significa que si ya existe un usuario con ese email,
-        // se actualizarán los campos en lugar de crear uno nuevo.
         const { data, error } = await supabase
             .from('usuarios')
             .upsert(userData, { onConflict: 'email' })
             .select();
-
-        if (error) {
-            console.error("Error en setup-admin (upsert):", error.message);
-            throw error;
-        }
-
-        res.status(201).json({ 
-            message: `Usuario '${email}' creado/actualizado exitosamente.`,
-            user: data 
-        });
-
+        if (error) throw error;
+        res.status(201).json({ message: `Usuario '${email}' creado/actualizado.`, user: data });
     } catch (error) {
         console.error("Error crítico en /api/setup-admin:", error.message);
         res.status(500).json({ error: 'Error interno del servidor', details: error.message });
@@ -192,13 +151,12 @@ app.post('/api/setup-admin', async (req, res) => {
 // ============================================
 
 // --- Endpoints de CLIENTES ---
-
+// CAMBIO v2.4: Eliminada la columna 'email'. Añadidas 'activo' y 'solicitud_de_secretaría'.
 app.get('/api/clientes', authenticateToken, async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('clientes')
-            // CAMBIO v2.4: Eliminada la columna 'email' que no existe
-            .select('id, nombre, telefono, dni')
+            .select('id, nombre, telefono, dni, activo, solicitud_de_secretaría') // Columna 'email' eliminada
             .order('nombre', { ascending: true });
         if (error) throw error;
         res.status(200).json(data);
@@ -208,13 +166,15 @@ app.get('/api/clientes', authenticateToken, async (req, res) => {
     }
 });
 
+// CAMBIO v2.4: Eliminada la columna 'email' de la validación.
 app.post('/api/clientes', authenticateToken, async (req, res) => {
     try {
         const schema = z.object({
             nombre: z.string().min(3, "El nombre debe tener al menos 3 caracteres"),
-            // CAMBIO v2.4: Eliminado 'email'
-            telefono: z.string().min(8, "Teléfono inválido").optional().nullable(),
-            dni: z.string().min(7, "DNI inválido").optional().nullable()
+            telefono: z.string().min(8, "Teléfono inválido").default(''),
+            dni: z.string().min(7, "DNI inválido"),
+            activo: z.boolean().default(true).optional(),
+            solicitud_de_secretaría: z.boolean().optional().nullable()
         });
         const validatedData = schema.parse(req.body);
 
@@ -236,14 +196,12 @@ app.post('/api/clientes', authenticateToken, async (req, res) => {
 
 
 // --- Endpoints de DOCTORES ---
-
-// NUEVO (v2.2): Obtener todos los doctores
+// CAMBIO v2.4: Renombradas columnas a 'horario_inicio', 'horario_fin', 'activo'.
 app.get('/api/doctores', authenticateToken, async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('doctores')
-            // CAMBIO v2.4: Nombres de columna alineados con el esquema real
-            .select('id, nombre, especialidad, horario_inicio, horario_fin, activo')
+            .select('id, nombre, especialidad, horario_inicio, horario_fin, activo') // Nombres de columnas actualizados
             .order('nombre', { ascending: true });
         if (error) throw error;
         res.status(200).json(data);
@@ -253,11 +211,10 @@ app.get('/api/doctores', authenticateToken, async (req, res) => {
     }
 });
 
-// NUEVO (v2.2): Actualizar un doctor
+// CAMBIO v2.4: Renombradas columnas a 'horario_inicio', 'horario_fin', 'activo'.
 app.put('/api/doctores/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     
-    // Validación de seguridad: Solo un admin puede editar doctores
     if (req.user.rol !== 'admin') {
         return res.status(403).json({ error: 'Acceso denegado. Se requiere rol de administrador.' });
     }
@@ -265,18 +222,16 @@ app.put('/api/doctores/:id', authenticateToken, async (req, res) => {
     try {
         const timeRegex = /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$/; // Formato HH:MM
 
-        // CAMBIO v2.4: Nombres de claves alineados con el esquema real
         const schema = z.object({
             especialidad: z.string().min(2, "Especialidad inválida").optional().nullable(),
+            // Nombres de columnas actualizados
             horario_inicio: z.string().regex(timeRegex, "Formato de hora debe ser HH:MM").optional().nullable(),
             horario_fin: z.string().regex(timeRegex, "Formato de hora debe ser HH:MM").optional().nullable(),
             activo: z.boolean().optional()
         });
 
-        // Validamos solo los campos que se envían
         const validatedData = schema.parse(req.body);
 
-        // Filtrar claves nulas o indefinidas (para no sobrescribir en Supabase)
         const updateData = Object.fromEntries(
             Object.entries(validatedData).filter(([_, v]) => v !== null && v !== undefined)
         );
@@ -320,7 +275,7 @@ app.get('/api/citas', authenticateToken, async (req, res) => {
                 cliente: clientes (id, nombre, dni),
                 doctor: doctores (id, nombre, especialidad)
             `)
-            .order('fecha_hora', { ascending: false }); // v2.2: Ordenar por más reciente primero
+            .order('fecha_hora', { ascending: false }); 
         
         if (error) throw error;
         res.status(200).json(data);
@@ -332,10 +287,13 @@ app.get('/api/citas', authenticateToken, async (req, res) => {
 
 app.post('/api/citas', authenticateToken, async (req, res) => {
     try {
+        // CAMBIO v2.4: Regex para 'timestamp without time zone' y Enums actualizados.
+        const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?$/; // YYYY-MM-DDTHH:MM:SS.sss
+
         const schema = z.object({
-            fecha_hora: z.string().datetime("La fecha y hora debe ser un string ISO 8601"),
+            fecha_hora: z.string().regex(fechaHoraRegex, "Formato de fecha debe ser YYYY-MM-DDTHH:MM:SS"),
             descripcion: z.string().optional().nullable(),
-            // CAMBIO v2.4: Enum y default alineados con el esquema real
+            // Enums actualizados para coincidir con la DB
             estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).default('programada'),
             duracion_minutos: z.number().int().positive().default(30),
             cliente_id: z.number().int().positive(),
@@ -344,10 +302,6 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
 
         const validatedData = schema.parse(req.body);
         
-        // v2.2 - Corrección UTC: La fecha_hora ya viene en ISO (UTC por defecto o con offset)
-        // Supabase (PostgreSQL con timestamptz) la guardará correctamente en UTC.
-        // No se necesita conversión manual si el frontend envía un string ISO válido.
-
         const { data, error } = await supabase
             .from('citas')
             .insert(validatedData)
@@ -356,7 +310,7 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
         
         if (error) throw error;
 
-        // Devolver datos completos (como en GET)
+        // Devolver datos completos
         const { data: fullCita, error: selectError } = await supabase
             .from('citas')
             .select(`id, fecha_hora, descripcion, estado, duracion_minutos, cliente: clientes (id, nombre, dni), doctor: doctores (id, nombre)`)
@@ -378,11 +332,13 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
 app.put('/api/citas/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     try {
+        // CAMBIO v2.4: Regex para 'timestamp without time zone' y Enums actualizados.
+        const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?$/; // YYYY-MM-DDTHH:MM:SS.sss
+
         const schema = z.object({
-            // v2.2 - Corrección UTC: Aceptar el string ISO 8601 directamente
-            fecha_hora: z.string().datetime("Formato de fecha inválido").optional(),
+            fecha_hora: z.string().regex(fechaHoraRegex, "Formato de fecha debe ser YYYY-MM-DDTHH:MM:SS").optional(),
             descripcion: z.string().optional().nullable(),
-            // CAMBIO v2.4: Enum alineado con el esquema real
+            // Enums actualizados
             estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).optional(),
             duracion_minutos: z.number().int().positive().optional(),
             cliente_id: z.number().int().positive().optional(),
@@ -399,17 +355,13 @@ app.put('/api/citas/:id', authenticateToken, async (req, res) => {
             .from('citas')
             .update(validatedData)
             .eq('id', id)
-            .select() // Pedir que devuelva el registro actualizado
-            .single(); // Esperamos solo uno
+            .select()
+            .single();
         
-        if (error) {
-            console.error(`Error al actualizar cita ${id}:`, error.message);
-            throw error;
-        }
-        
-        if (!data) return res.status(404).json({ error: 'Cita no encontrada o no se pudo actualizar.' });
+        if (error) throw error;
+        if (!data) return res.status(404).json({ error: 'Cita no encontrada.' });
 
-        // 3. Devolver datos completos (como en GET)
+        // Devolver datos completos
         const { data: fullCita, error: selectError } = await supabase
             .from('citas')
             .select(`id, fecha_hora, descripcion, estado, duracion_minutos, cliente: clientes (id, nombre, dni), doctor: doctores (id, nombre)`)
@@ -434,7 +386,7 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
     try {
         const { error } = await supabase.from('citas').delete().eq('id', id);
         if (error) throw error;
-        res.status(204).send(); // 204 No Content (Éxito sin cuerpo de respuesta)
+        res.status(204).send();
     } catch (error) {
         console.error("Error al eliminar la cita:", error.message);
         res.status(500).json({ error: 'No se pudo eliminar la cita.', details: error.message });
@@ -444,11 +396,7 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
 // ============================================
 // 5. INICIAR SERVIDOR
 // ============================================
-// ESTA ES LA PARTE QUE PROBABLEMENTE SE BORRÓ
 app.listen(port, () => {
-    // Usar 0.0.0.0 para asegurar que sea accesible fuera del contenedor (como requiere Easypanel)
-    // Aunque express por defecto escucha en 0.0.0.0 si no se especifica host.
-    console.log(`Servidor Vintex v2.3 corriendo en http://localhost:${port}`);
+    console.log(`Servidor Vintex v2.4 (Schema-Aligned) corriendo en http://localhost:${port}`);
 });
-
 
