@@ -1,9 +1,11 @@
-// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.6) =============
+// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.7) =============
 //
-// CAMBIOS v2.6 (Oct 27, 2025):
-// - FIX DE DESPLIEGUE: Se usa 'process.env.PORT' para que Easypanel
-//   pueda asignar el puerto dinámicamente. '3001' se usa como fallback
-//   para desarrollo local. Esto soluciona el bucle de 'SIGTERM'.
+// CAMBIOS v2.7 (Oct 27, 2025):
+// - Agregada columna 'timezone' en la tabla 'citas' para soportar múltiples zonas horarias.
+// - Implementada validación de conflictos de horario en los endpoints POST y PATCH de citas.
+// - Documentación mejorada para aclarar que 'fecha_hora' se almacena como hora local.
+// - Mantiene compatibilidad con datos existentes (timezone NULL para citas previas).
+// - FIX v2.6: Uso de 'process.env.PORT' para Easypanel con fallback a 3001.
 //
 // ========================================================================
 
@@ -83,12 +85,11 @@ app.post('/api/setup-admin', async (req, res) => {
     } catch (error) { console.error("Error crítico en /api/setup-admin:", error.message); res.status(500).json({ error: 'Error interno del servidor', details: error.message }); }
 });
 
-
 // ============================================
-// ENDPOINTS PROTEGIDOS (Adaptados a v2.5)
+// ENDPOINTS PROTEGIDOS (Adaptados a v2.7)
 // ============================================
 
-// --- (NUEVO) Endpoint /initial-data (para UI v4) ---
+// --- Endpoint /initial-data (Actualizado para v2.7) ---
 app.get('/api/initial-data', authenticateToken, async (req, res) => {
     try {
         const [
@@ -97,17 +98,17 @@ app.get('/api/initial-data', authenticateToken, async (req, res) => {
             { data: clients, error: clientsError },
             { data: chatHistory, error: chatError }
         ] = await Promise.all([
-            // Doctores (Alineado con v2.4)
+            // Doctores
             supabase.from('doctores').select('id, nombre, especialidad, horario_inicio, horario_fin, activo'),
-            // Citas (Alineado con v2.4)
+            // Citas (incluye timezone)
             supabase.from('citas').select(`
-                id, fecha_hora, descripcion, estado, duracion_minutos,
+                id, fecha_hora, timezone, descripcion, estado, duracion_minutos,
                 cliente: clientes (id, nombre, dni),
                 doctor: doctores (id, nombre, especialidad)
             `),
-            // Clientes (Alineado con v2.4)
+            // Clientes
             supabase.from('clientes').select('id, nombre, telefono, dni, activo, solicitud_de_secretaría'),
-            // Historial de Chat (Necesario para UI v4)
+            // Historial de Chat
             supabase.from('n8n_chat_histories').select('id, session_id, message')
         ]);
 
@@ -123,8 +124,7 @@ app.get('/api/initial-data', authenticateToken, async (req, res) => {
     }
 });
 
-
-// --- Endpoints de CLIENTES (Alineados con v2.4 + PATCH) ---
+// --- Endpoints de CLIENTES ---
 app.post('/api/clientes', authenticateToken, async (req, res) => {
     try {
         const schema = z.object({
@@ -145,11 +145,9 @@ app.post('/api/clientes', authenticateToken, async (req, res) => {
     }
 });
 
-// (NUEVO) PATCH para clientes (para UI v4)
 app.patch('/api/clientes/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     try {
-        // Esquema flexible para 'activo' o 'solicitud_de_secretaría'
         const schema = z.object({
             activo: z.boolean().optional(),
             solicitud_de_secretaría: z.boolean().optional()
@@ -167,8 +165,7 @@ app.patch('/api/clientes/:id', authenticateToken, async (req, res) => {
     }
 });
 
-
-// --- Endpoints de DOCTORES (Alineados con v2.4 + PATCH) ---
+// --- Endpoints de DOCTORES ---
 app.post('/api/doctores', authenticateToken, async (req, res) => {
     if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Acceso denegado.' });
     try {
@@ -191,7 +188,6 @@ app.post('/api/doctores', authenticateToken, async (req, res) => {
     }
 });
 
-// (ACTUALIZADO) De PUT a PATCH para doctores (para UI v4)
 app.patch('/api/doctores/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Acceso denegado.' });
@@ -217,19 +213,18 @@ app.patch('/api/doctores/:id', authenticateToken, async (req, res) => {
     }
 });
 
-
-// --- Endpoints de CITAS (Alineados con v2.4 + PATCH + Creación de Cliente) ---
+// --- Endpoints de CITAS (Actualizados para v2.7) ---
 app.post('/api/citas', authenticateToken, async (req, res) => {
     try {
         // Esquema para la cita
-        const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?$/; // YYYY-MM-DDTHH:MM:SS.sss
+        const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?$/;
         const citaSchema = z.object({
-            fecha_hora: z.string().regex(fechaHoraRegex, "Formato YYYY-MM-DDTHH:MM:SS"),
+            fecha_hora: z.string().regex(fechaHoraRegex, "Formato YYYY-MM-DDTHH:MM:SS"), // Hora local
+            timezone: z.string().optional(), // Zona horaria, ej. 'America/Buenos_Aires'
             descripcion: z.string().optional().nullable(),
             estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).default('programada'),
             duracion_minutos: z.number().int().positive().default(30),
             doctor_id: z.number().int().positive(),
-            // Campos para nuevo cliente (opcionales)
             cliente_id: z.number().int().positive().optional().nullable(),
             new_client_name: z.string().optional().nullable(),
             new_client_dni: z.string().optional().nullable(),
@@ -239,7 +234,21 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
         const validatedData = citaSchema.parse(req.body);
         let clienteId = validatedData.cliente_id;
 
-        // Lógica para crear nuevo cliente (de UI v4)
+        // Validar conflictos de horario
+        const startTime = new Date(validatedData.fecha_hora);
+        const endTime = new Date(startTime.getTime() + validatedData.duracion_minutos * 60000);
+        const { data: conflictingAppointments, error: conflictError } = await supabase
+            .from('citas')
+            .select('id')
+            .eq('doctor_id', validatedData.doctor_id)
+            .gte('fecha_hora', validatedData.fecha_hora)
+            .lte('fecha_hora', endTime.toISOString().split('.')[0]); // Ignora milisegundos
+        if (conflictError) throw conflictError;
+        if (conflictingAppointments.length > 0) {
+            return res.status(409).json({ error: 'Conflicto de horario con otra cita.' });
+        }
+
+        // Lógica para crear nuevo cliente
         if (!clienteId && validatedData.new_client_name && validatedData.new_client_dni) {
             const { data: newClient, error: clientError } = await supabase
                 .from('clientes')
@@ -247,13 +256,13 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
                     nombre: validatedData.new_client_name,
                     dni: validatedData.new_client_dni,
                     telefono: validatedData.new_client_telefono || '',
-                    activo: true // Bot activado por defecto
+                    activo: true
                 })
                 .select('id')
                 .single();
             
             if (clientError) {
-                if (clientError.code === '23505') { // Violación de unicidad (DNI)
+                if (clientError.code === '23505') {
                     return res.status(409).json({ error: 'Ya existe un cliente con ese DNI.', details: clientError.message });
                 }
                 throw clientError;
@@ -270,6 +279,7 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
                 cliente_id: clienteId,
                 doctor_id: validatedData.doctor_id,
                 fecha_hora: validatedData.fecha_hora,
+                timezone: validatedData.timezone || null, // Almacena la zona horaria
                 descripcion: validatedData.descripcion,
                 estado: validatedData.estado,
                 duracion_minutos: validatedData.duracion_minutos
@@ -278,8 +288,7 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
             .single();
         
         if (error) throw error;
-        res.status(201).json(data); // La UI v4 no necesita los datos completos, solo confirma.
-
+        res.status(201).json(data);
     } catch (error) {
         if (error instanceof z.ZodError) return res.status(400).json({ error: 'Datos de cita inválidos', details: error.errors });
         console.error("Error al crear la cita:", error.message);
@@ -287,13 +296,13 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
     }
 });
 
-// (ACTUALIZADO) De PUT a PATCH para citas (para UI v4)
 app.patch('/api/citas/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     try {
         const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?$/;
         const schema = z.object({
             fecha_hora: z.string().regex(fechaHoraRegex).optional(),
+            timezone: z.string().optional(),
             descripcion: z.string().optional().nullable(),
             estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).optional(),
             duracion_minutos: z.number().int().positive().optional(),
@@ -302,6 +311,34 @@ app.patch('/api/citas/:id', authenticateToken, async (req, res) => {
         const validatedData = schema.parse(req.body);
         if (Object.keys(validatedData).length === 0) return res.status(400).json({ error: 'No se proporcionaron datos.' });
         
+        // Validar conflictos de horario si se actualiza fecha_hora o duracion_minutos
+        if (validatedData.fecha_hora || validatedData.duracion_minutos) {
+            const { data: currentAppointment, error: fetchError } = await supabase
+                .from('citas')
+                .select('fecha_hora, duracion_minutos, doctor_id')
+                .eq('id', id)
+                .single();
+            if (fetchError) throw fetchError;
+            if (!currentAppointment) return res.status(404).json({ error: 'Cita no encontrada.' });
+
+            const startTime = validatedData.fecha_hora ? new Date(validatedData.fecha_hora) : new Date(currentAppointment.fecha_hora);
+            const duration = validatedData.duracion_minutos || currentAppointment.duracion_minutos;
+            const doctorId = validatedData.doctor_id || currentAppointment.doctor_id;
+            const endTime = new Date(startTime.getTime() + duration * 60000);
+            
+            const { data: conflictingAppointments, error: conflictError } = await supabase
+                .from('citas')
+                .select('id')
+                .eq('doctor_id', doctorId)
+                .gte('fecha_hora', startTime.toISOString().split('.')[0])
+                .lte('fecha_hora', endTime.toISOString().split('.')[0])
+                .neq('id', id); // Excluye la cita actual
+            if (conflictError) throw conflictError;
+            if (conflictingAppointments.length > 0) {
+                return res.status(409).json({ error: 'Conflicto de horario con otra cita.' });
+            }
+        }
+
         const { data, error } = await supabase.from('citas').update(validatedData).eq('id', id).select().single();
         if (error) throw error;
         if (!data) return res.status(404).json({ error: 'Cita no encontrada.' });
@@ -327,7 +364,5 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
 
 // 5. INICIAR SERVIDOR
 app.listen(port, () => {
-    // El log ahora mostrará el puerto correcto asignado por Easypanel
-    console.log(`Servidor Vintex v2.6 (Fix Puerto) corriendo en http://localhost:${port}`);
+    console.log(`Servidor Vintex v2.7 (Soporte Timezone y Conflictos) corriendo en http://localhost:${port}`);
 });
-
