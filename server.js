@@ -1,4 +1,39 @@
-// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.2) =============
+// ============================================
+// 4. ENDPOINTS DE LA API
+// ============================================
+
+// --- Endpoint de Login ---
+// CAMBIO v2.3: Se actualizó para usar 'email' en lugar de 'username'
+app.post('/api/login', async (req, res) => {
+    try {
+        // 1. Validar el cuerpo de la solicitud
+        const schema = z.object({
+            email: z.string().email({ message: "Email inválido" }), // CAMBIO: de username a email
+            password: z.string().min(1, { message: "La contraseña es requerida" })
+        });
+
+        const validatedData = schema.safeParse(req.body);
+        if (!validatedData.success) {
+            return res.status(400).json({ error: 'Datos de login inválidos', details: validatedData.error.errors });
+        }
+
+        const { email, password } = validatedData.data; // CAMBIO: de username a email
+
+        // 2. Usar RPC para obtener el usuario de forma segura
+        // CAMBIO: de 'get_user_by_username' a 'get_user_by_email'
+        const { data, error } = await supabase.rpc('get_user_by_email', { p_email: email });
+
+        if (error) {
+            console.error('Error RPC get_user_by_email:', error.message);
+            return res.status(500).json({ error: 'Error al consultar la base de datos', details: error.message });
+        }
+
+        if (!data || data.length === 0) {
+            return res.status(404).json({ error: 'Usuario no encontrado' });
+        }
+
+        const user = data[0];
+
 //
 // --- CHANGELOG v2.2 ---
 // - FIX (Doctores): Se actualizan esquemas Zod (POST y PUT) para incluir:
@@ -408,3 +443,4 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
 app.listen(port, () => {
     console.log(`Servidor Vintex v2.2 corriendo en http://localhost:${port}`);
 });
+
