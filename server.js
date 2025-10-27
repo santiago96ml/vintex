@@ -1,15 +1,13 @@
-// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.5) =============
+// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.6) =============
 //
-// CAMBIOS v2.5 (Oct 27, 2025):
-// - Soporte para la UI v4 (la de la agenda-calendario).
-// - Se añade el endpoint GET /api/initial-data que la UI v4 espera.
-// - Se cambian los endpoints de PUT a PATCH para coincidir con la UI v4.
-// - Se añade PATCH /api/clientes/:id para el 'toggleBotStatus'.
-// - Se añade lógica a POST /api/citas para crear nuevos clientes.
+// CAMBIOS v2.6 (Oct 27, 2025):
+// - FIX DE DESPLIEGUE: Se usa 'process.env.PORT' para que Easypanel
+//   pueda asignar el puerto dinámicamente. '3001' se usa como fallback
+//   para desarrollo local. Esto soluciona el bucle de 'SIGTERM'.
 //
 // ========================================================================
 
-// 1. IMPORTACIÓN DE MÓDULOS (Sin cambios)
+// 1. IMPORTACIÓN DE MÓDULOS
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -18,9 +16,12 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { z } = require('zod');
 
-// 2. CONFIGURACIÓN INICIAL (Sin cambios)
+// 2. CONFIGURACIÓN INICIAL
 const app = express();
-const port = 3001;
+// --- FIX v2.6: Usar el puerto de Easypanel o 3001 como default ---
+const port = process.env.PORT || 3001;
+// -------------------------------------------------------------
+
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) { console.error("Error: JWT_SECRET debe estar definida."); process.exit(1); }
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -28,7 +29,7 @@ const supabaseKey = process.env.SUPABASE_ANON_KEY;
 if (!supabaseUrl || !supabaseKey) { console.error("Error: SUPABASE_URL y SUPABASE_ANON_KEY deben estar definidas."); process.exit(1); }
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// 3. MIDDLEWARE (Sin cambios)
+// 3. MIDDLEWARE
 app.use(cors());
 app.use(express.json());
 
@@ -326,6 +327,7 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
 
 // 5. INICIAR SERVIDOR
 app.listen(port, () => {
-    console.log(`Servidor Vintex v2.5 (Soporte UI v4) corriendo en http://localhost:${port}`);
+    // El log ahora mostrará el puerto correcto asignado por Easypanel
+    console.log(`Servidor Vintex v2.6 (Fix Puerto) corriendo en http://localhost:${port}`);
 });
 
