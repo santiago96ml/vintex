@@ -197,7 +197,8 @@ app.get('/api/clientes', authenticateToken, async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('clientes')
-            .select('id, nombre, email, telefono, dni')
+            // CAMBIO v2.4: Eliminada la columna 'email' que no existe
+            .select('id, nombre, telefono, dni')
             .order('nombre', { ascending: true });
         if (error) throw error;
         res.status(200).json(data);
@@ -211,7 +212,7 @@ app.post('/api/clientes', authenticateToken, async (req, res) => {
     try {
         const schema = z.object({
             nombre: z.string().min(3, "El nombre debe tener al menos 3 caracteres"),
-            email: z.string().email("Email inválido").optional().nullable(),
+            // CAMBIO v2.4: Eliminado 'email'
             telefono: z.string().min(8, "Teléfono inválido").optional().nullable(),
             dni: z.string().min(7, "DNI inválido").optional().nullable()
         });
@@ -241,7 +242,8 @@ app.get('/api/doctores', authenticateToken, async (req, res) => {
     try {
         const { data, error } = await supabase
             .from('doctores')
-            .select('id, nombre, especialidad, inicio_jornada, fin_jornada, activo_agendame')
+            // CAMBIO v2.4: Nombres de columna alineados con el esquema real
+            .select('id, nombre, especialidad, horario_inicio, horario_fin, activo')
             .order('nombre', { ascending: true });
         if (error) throw error;
         res.status(200).json(data);
@@ -263,11 +265,12 @@ app.put('/api/doctores/:id', authenticateToken, async (req, res) => {
     try {
         const timeRegex = /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$/; // Formato HH:MM
 
+        // CAMBIO v2.4: Nombres de claves alineados con el esquema real
         const schema = z.object({
             especialidad: z.string().min(2, "Especialidad inválida").optional().nullable(),
-            inicio_jornada: z.string().regex(timeRegex, "Formato de hora debe ser HH:MM").optional().nullable(),
-            fin_jornada: z.string().regex(timeRegex, "Formato de hora debe ser HH:MM").optional().nullable(),
-            activo_agendame: z.boolean().optional()
+            horario_inicio: z.string().regex(timeRegex, "Formato de hora debe ser HH:MM").optional().nullable(),
+            horario_fin: z.string().regex(timeRegex, "Formato de hora debe ser HH:MM").optional().nullable(),
+            activo: z.boolean().optional()
         });
 
         // Validamos solo los campos que se envían
@@ -332,7 +335,8 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
         const schema = z.object({
             fecha_hora: z.string().datetime("La fecha y hora debe ser un string ISO 8601"),
             descripcion: z.string().optional().nullable(),
-            estado: z.enum(['pendiente', 'confirmada', 'cancelada', 'completada']).default('pendiente'),
+            // CAMBIO v2.4: Enum y default alineados con el esquema real
+            estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).default('programada'),
             duracion_minutos: z.number().int().positive().default(30),
             cliente_id: z.number().int().positive(),
             doctor_id: z.number().int().positive()
@@ -378,7 +382,8 @@ app.put('/api/citas/:id', authenticateToken, async (req, res) => {
             // v2.2 - Corrección UTC: Aceptar el string ISO 8601 directamente
             fecha_hora: z.string().datetime("Formato de fecha inválido").optional(),
             descripcion: z.string().optional().nullable(),
-            estado: z.enum(['pendiente', 'confirmada', 'cancelada', 'completada']).optional(),
+            // CAMBIO v2.4: Enum alineado con el esquema real
+            estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).optional(),
             duracion_minutos: z.number().int().positive().optional(),
             cliente_id: z.number().int().positive().optional(),
             doctor_id: z.number().int().positive().optional()
@@ -445,4 +450,5 @@ app.listen(port, () => {
     // Aunque express por defecto escucha en 0.0.0.0 si no se especifica host.
     console.log(`Servidor Vintex v2.3 corriendo en http://localhost:${port}`);
 });
+
 
