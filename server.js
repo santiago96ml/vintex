@@ -1,15 +1,15 @@
-// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.7.1 - FIX TIMEZONE) =============
+// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 2.7.2 - FIX DOCTOR TIME) =============
 //
-// CAMBIOS v2.7.1 (Oct 27, 2025):
-// - [CRÍTICO] Ajustada regex de fecha_hora en Zod para aceptar el formato ISO-8601 UTC (con 'Z').
-// - [CRÍTICO] Se asume que el frontend SIEMPRE envía 'fecha_hora' como valor UTC para almacenamiento.
-// - Mejorada consulta de conflicto de citas (excluye canceladas).
+// CAMBIOS v2.7.2:
+// - [CRÍTICO] Modificada la expresión regular 'timeRegex' en doctores para aceptar 
+//   opcionalmente los segundos (HH:MM o HH:MM:SS), resolviendo el error "Datos de doctor inválidos".
+// - Se mantiene la lógica de zona horaria para CITAS, esperando el valor UTC del frontend.
 //
 // NOTA IMPORTANTE: Para que este backend funcione correctamente con el frontend, 
 // la columna 'fecha_hora' en la tabla 'citas' de Supabase DEBE ser de tipo 
 // 'timestamp with time zone'.
 //
-// ========================================================================
+// =============================================================================================
 
 // 1. IMPORTACIÓN DE MÓDULOS
 require('dotenv').config();
@@ -22,9 +22,8 @@ const { z } = require('zod');
 
 // 2. CONFIGURACIÓN INICIAL
 const app = express();
-// --- FIX v2.6: Usar el puerto de Easypanel o 3001 como default ---
+// Usar el puerto de Easypanel o 3001 como default
 const port = process.env.PORT || 3001;
-// -------------------------------------------------------------
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) { console.error("Error: JWT_SECRET debe estar definida."); process.exit(1); }
@@ -88,10 +87,10 @@ app.post('/api/setup-admin', async (req, res) => {
 });
 
 // ============================================
-// ENDPOINTS PROTEGIDOS (Adaptados a v2.7.1)
+// ENDPOINTS PROTEGIDOS (Adaptados a v2.7.2)
 // ============================================
 
-// --- Endpoint /initial-data (Actualizado para v2.7.1) ---
+// --- Endpoint /initial-data (v2.7.1 - Correcto) ---
 app.get('/api/initial-data', authenticateToken, async (req, res) => {
     try {
         const [
@@ -167,16 +166,18 @@ app.patch('/api/clientes/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Endpoints de DOCTORES (Sin cambios) ---
+// --- Endpoints de DOCTORES (Corregido timeRegex) ---
 app.post('/api/doctores', authenticateToken, async (req, res) => {
     if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Acceso denegado.' });
     try {
-        const timeRegex = /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$/;
+        // CORRECCIÓN: timeRegex debe aceptar opcionalmente los segundos (:SS)
+        const timeRegex = /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/;
+        
         const schema = z.object({
             nombre: z.string().min(2, "Nombre inválido"),
             especialidad: z.string().optional().nullable(),
-            horario_inicio: z.string().regex(timeRegex, "Formato HH:MM"),
-            horario_fin: z.string().regex(timeRegex, "Formato HH:MM"),
+            horario_inicio: z.string().regex(timeRegex, "Formato HH:MM o HH:MM:SS"),
+            horario_fin: z.string().regex(timeRegex, "Formato HH:MM o HH:MM:SS"),
             activo: z.boolean().default(true)
         });
         const validatedData = schema.parse(req.body);
@@ -194,7 +195,9 @@ app.patch('/api/doctores/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Acceso denegado.' });
     try {
-        const timeRegex = /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$/;
+        // CORRECCIÓN: timeRegex debe aceptar opcionalmente los segundos (:SS)
+        const timeRegex = /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/;
+        
         const schema = z.object({
             especialidad: z.string().min(2).optional().nullable(),
             horario_inicio: z.string().regex(timeRegex).optional().nullable(),
@@ -215,11 +218,10 @@ app.patch('/api/doctores/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Endpoints de CITAS (Actualizados para v2.7.1) ---
+// --- Endpoints de CITAS (v2.7.1 - Correcto) ---
 app.post('/api/citas', authenticateToken, async (req, res) => {
     try {
-        // Esquema para la cita - Ajustado para aceptar el valor UTC del frontend
-        // Acepta YYYY-MM-DDTHH:MM:SSZ o YYYY-MM-DDTHH:MM:SS.sssZ
+        // Esquema para la cita - Acepta formato UTC ISO-8601 del frontend
         const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z?$/;
         const citaSchema = z.object({
             fecha_hora: z.string().regex(fechaHoraRegex, "Formato ISO-8601 (UTC)"), 
@@ -238,7 +240,6 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
         let clienteId = validatedData.cliente_id;
 
         // Validar conflictos de horario
-        // Usamos el valor UTC enviado por el frontend, que es el correcto para la base de datos.
         const startTime = new Date(validatedData.fecha_hora);
         const endTime = new Date(startTime.getTime() + validatedData.duracion_minutos * 60000);
         
@@ -247,9 +248,9 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
             .from('citas')
             .select('id')
             .eq('doctor_id', validatedData.doctor_id)
-            .neq('estado', 'cancelada') // Excluye citas canceladas
-            .gte('fecha_hora', validatedData.fecha_hora) // Compara con la hora UTC enviada (inicio)
-            .lte('fecha_hora', endTime.toISOString()); // Compara con la hora UTC calculada (fin)
+            .neq('estado', 'cancelada')
+            .gte('fecha_hora', validatedData.fecha_hora) 
+            .lte('fecha_hora', endTime.toISOString()); 
         
         if (conflictError) throw conflictError;
         if (conflictingAppointments.length > 0) {
@@ -280,7 +281,7 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Debe seleccionar un cliente existente o crear uno nuevo.' });
         }
         
-        // Crear la cita (Sin cambios en la estructura)
+        // Crear la cita (Almacena el valor UTC enviado)
         const { data, error } = await supabase
             .from('citas')
             .insert({
@@ -307,7 +308,7 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
 app.patch('/api/citas/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     try {
-        // Esquema para la cita - Ajustado para aceptar el valor UTC del frontend
+        // Esquema para la cita - Acepta formato UTC ISO-8601 del frontend
         const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z?$/;
         const schema = z.object({
             fecha_hora: z.string().regex(fechaHoraRegex).optional(),
@@ -376,5 +377,5 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
 
 // 5. INICIAR SERVIDOR
 app.listen(port, () => {
-    console.log(`Servidor Vintex v2.7.1 (FIX TIMEZONE) corriendo en http://localhost:${port}`);
+    console.log(`Servidor Vintex v2.7.2 (FIX DOCTOR TIME) corriendo en http://localhost:${port}`);
 });
