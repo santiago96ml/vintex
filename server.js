@@ -17,11 +17,10 @@ const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { z } = require('zod');
-const rateLimit = require('express-rate-limit'); // <--- FASE B (Requiere 'npm install express-rate-limit')
+const rateLimit = require('express-rate-limit'); // (Requiere 'npm install express-rate-limit')
 
 // 2. CONFIGURACIÓN INICIAL
 const app = express();
-// El puerto 80 es común en EasyPanel, o 3001 como fallback
 const port = process.env.PORT || 3001; 
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -38,18 +37,7 @@ app.use(express.json());
 // ==========================================================
 // [FIX] RUTA DE HEALTH CHECK (Para EasyPanel / Plataformas)
 // Responde a pings de "estás vivo?" en la ruta raíz.
-// ==========================================================
-app.get('/', (req, res) => {
-    res.status(200).json({ 
-        status: 'ok', 
-        message: 'Servidor Vintex v3.0 (SCALABLE) está en línea.' 
-    });
-});
-// ==========================================================
-
-// ==========================================================
-// [FIX] RUTA DE HEALTH CHECK (Para EasyPanel / Plataformas)
-// Responde a pings de "estás vivo?" en la ruta raíz.
+// ESTA ES LA RUTA QUE SOLUCIONA EL ERROR SIGTERM
 // ==========================================================
 app.get('/', (req, res) => {
     res.status(200).json({ 
@@ -60,21 +48,18 @@ app.get('/', (req, res) => {
 // ==========================================================
 
 // --- MIDDLEWARE DE SEGURIDAD (FASE B) ---
-// Aplicar a todas las rutas API
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutos
-    max: 200, // Límite de 200 peticiones por IP por ventana
+    max: 200, 
     message: 'Demasiadas peticiones desde esta IP, por favor intente de nuevo en 15 minutos.',
 });
 app.use('/api/', apiLimiter);
 
-// Aplicar un limitador más estricto al login
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutos
-    max: 10, // Límite de 10 intentos de login por IP
+    max: 10, 
     message: 'Demasiados intentos de login, por favor intente de nuevo en 15 minutos.',
 });
-// Nota: El limiter se aplica directamente en la ruta de login
 // --- FIN MIDDLEWARE DE SEGURIDAD ---
 
 const authenticateToken = (req, res, next) => {
@@ -84,8 +69,6 @@ const authenticateToken = (req, res, next) => {
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) { console.warn("Token JWT inválido:", err.message); return res.status(403).json({ error: 'Token inválido' }); }
-        
-        // Adjuntamos el payload completo del token (incluyendo user.id numérico)
         req.user = user; 
         next();
     });
@@ -93,26 +76,21 @@ const authenticateToken = (req, res, next) => {
 
 // 4. ESQUEMAS DE VALIDACIÓN ZOD (Actualizados para BIGINT)
 
-// TUS IDs SON 'SERIAL' (int4) o 'BIGINT' (int8), ambos son números.
 const idSchema = z.number().int().positive("El ID debe ser un número positivo.");
-
-// Regex de hora (HH:MM o HH:MM:SS) - Corregido del server.js original
 const timeRegex = /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/;
-// Regex de fecha-hora UTC (ISO-8601)
 const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z?$/;
 
-// Esquemas de Citas
 const citaBaseSchema = z.object({
     fecha_hora: z.string().regex(fechaHoraRegex, "Formato ISO-8601 (UTC)"),
     timezone: z.string().optional(),
     descripcion: z.string().optional().nullable(),
     estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).default('programada'),
     duracion_minutos: z.number().int().positive().default(30),
-    doctor_id: idSchema, // <--- CORREGIDO (number)
+    doctor_id: idSchema,
 });
 
 const citaCreateSchema = citaBaseSchema.extend({
-    cliente_id: idSchema.optional().nullable(), // <--- CORREGIDO (number)
+    cliente_id: idSchema.optional().nullable(),
     new_client_name: z.string().optional().nullable(),
     new_client_dni: z.string().optional().nullable(),
     new_client_telefono: z.string().optional().nullable(),
@@ -122,7 +100,6 @@ const citaUpdateSchema = citaBaseSchema.partial().omit({ estado: true }).extend(
     estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).optional()
 });
 
-// Esquemas de Doctores
 const doctorSchema = z.object({
     nombre: z.string().min(2, "Nombre inválido"),
     especialidad: z.string().optional().nullable(),
@@ -131,21 +108,19 @@ const doctorSchema = z.object({
     activo: z.boolean().default(true)
 });
 
-// Esquemas de Clientes
 const clienteUpdateSchema = z.object({
     activo: z.boolean().optional(),
     solicitud_de_secretaría: z.boolean().optional()
 });
 
-// Esquemas de Archivos (FASE C - Corregido para BIGINT)
 const fileUploadUrlSchema = z.object({
     fileName: z.string().min(1, "El nombre de archivo es requerido"),
     fileType: z.string().min(1, "El tipo de archivo es requerido"),
-    clienteId: idSchema, // <--- CORREGIDO (number)
+    clienteId: idSchema,
 });
 
 const fileMetadataSchema = z.object({
-    clienteId: idSchema, // <--- CORREGIDO (number)
+    clienteId: idSchema,
     storagePath: z.string().min(1, "La ruta es requerida"),
     fileName: z.string().min(1, "El nombre de archivo es requerido"),
     fileType: z.string().min(1, "El tipo de archivo es requerido"),
@@ -160,7 +135,6 @@ const fileDownloadSchema = z.object({
 // 5. ENDPOINTS DE LA API
 
 // --- Endpoint de Login ---
-// Aplicamos el limitador estricto aquí
 app.post('/api/login', loginLimiter, async (req, res) => {
     try {
         const schema = z.object({
@@ -172,7 +146,6 @@ app.post('/api/login', loginLimiter, async (req, res) => {
 
         const { email, password } = validatedData.data;
 
-        // Usamos la tabla 'usuarios' (SERIAL ID) como confirmó tu schema
         const { data: user, error } = await supabase
             .from('usuarios')
             .select('id, nombre, rol, password_hash')
@@ -187,9 +160,8 @@ app.post('/api/login', loginLimiter, async (req, res) => {
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
         if (!isPasswordValid) return res.status(401).json({ error: 'Credenciales inválidas' });
 
-        // Payload del JWT - Incluimos el ID (numérico)
         const tokenPayload = { 
-            id: user.id, // <--- ID Numérico (de la tabla 'usuarios')
+            id: user.id, 
             rol: user.rol, 
             nombre: user.nombre 
         };
@@ -208,7 +180,6 @@ app.post('/api/login', loginLimiter, async (req, res) => {
 });
 
 // --- Endpoint /initial-data (FASE B - Optimizado) ---
-// Ya no envía 'appointments'. El frontend las pide por separado.
 app.get('/api/initial-data', authenticateToken, async (req, res) => {
     try {
         const [
@@ -218,7 +189,7 @@ app.get('/api/initial-data', authenticateToken, async (req, res) => {
         ] = await Promise.all([
             supabase.from('doctores').select('id, nombre, especialidad, horario_inicio, horario_fin, activo'),
             supabase.from('clientes').select('id, nombre, telefono, dni, activo, solicitud_de_secretaría'),
-            supabase.from('n8n_chat_histories').select('id, session_id, message') // Opcional, si se sigue usando
+            supabase.from('n8n_chat_histories').select('id, session_id, message')
         ]);
 
         if (doctorsError || clientsError || chatError) {
@@ -226,7 +197,6 @@ app.get('/api/initial-data', authenticateToken, async (req, res) => {
             throw (doctorsError || clientsError || chatError);
         }
 
-        // NO enviamos 'appointments'
         res.status(200).json({ doctors, clients, chatHistory });
 
     } catch (error) {
@@ -268,7 +238,6 @@ app.get('/api/citas-range', authenticateToken, async (req, res) => {
 app.patch('/api/clientes/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     try {
-        // Validar que el ID del parámetro es un número
         const validatedId = idSchema.parse(Number(id));
         const validatedData = clienteUpdateSchema.parse(req.body);
 
@@ -286,7 +255,6 @@ app.patch('/api/clientes/:id', authenticateToken, async (req, res) => {
 
 // --- Endpoints de DOCTORES ---
 app.post('/api/doctores', authenticateToken, async (req, res) => {
-    // Solo Admin puede crear doctores (ejemplo de ROL)
     if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Acceso denegado.' });
     
     try {
@@ -302,7 +270,6 @@ app.post('/api/doctores', authenticateToken, async (req, res) => {
 });
 
 app.patch('/api/doctores/:id', authenticateToken, async (req, res) => {
-    // Solo Admin puede editar doctores
     if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Acceso denegado.' });
 
     const { id } = req.params;
@@ -329,7 +296,6 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
         const validatedData = citaCreateSchema.parse(req.body);
         let clienteId = validatedData.cliente_id;
 
-        // Lógica para crear nuevo cliente (si aplica)
         if (!clienteId && validatedData.new_client_name && validatedData.new_client_dni) {
             const { data: newClient, error: clientError } = await supabase
                 .from('clientes')
@@ -343,7 +309,7 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
                 .single();
             
             if (clientError) {
-                if (clientError.code === '23505') { // Error de DNI duplicado
+                if (clientError.code === '23505') { 
                     return res.status(409).json({ error: 'Ya existe un cliente con ese DNI.', details: clientError.message });
                 }
                 throw clientError;
@@ -353,7 +319,6 @@ app.post('/api/citas', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Debe seleccionar un cliente existente o crear uno nuevo.' });
         }
         
-        // Crear la cita
         const { data, error } = await supabase
             .from('citas')
             .insert({
@@ -415,29 +380,21 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
 // ENDPOINTS DE ARCHIVOS (FASE C - 100% COMPLETO)
 // ============================================
 
-/**
- * Endpoint 1: Generar URL de subida pre-firmada.
- */
 app.post('/api/files/generate-upload-url', authenticateToken, async (req, res) => {
     try {
         const { fileName, fileType, clienteId } = fileUploadUrlSchema.parse(req.body);
-
-        // El ID del admin/usuario que está autenticado (viene del JWT)
         const adminId = req.user.id; 
         const filePath = `privado/cliente_${clienteId}/admin_${adminId}/${Date.now()}-${fileName}`;
 
-        // Bucket: 'archivos-pacientes'
         const { data, error } = await supabase.storage
             .from('archivos-pacientes') 
-            .createSignedUploadUrl(filePath, 60); // Válida por 60 segundos
+            .createSignedUploadUrl(filePath, 60); 
 
         if (error) throw error;
-
         res.status(200).json({ 
             uploadUrl: data.signedUrl, 
             filePath: data.path 
         });
-
     } catch (error) {
         if (error instanceof z.ZodError) return res.status(400).json({ error: 'Datos de archivo inválidos', details: error.errors });
         console.error("Error al generar URL de subida:", error.message);
@@ -445,30 +402,26 @@ app.post('/api/files/generate-upload-url', authenticateToken, async (req, res) =
     }
 });
 
-/**
- * Endpoint 2: Registrar metadatos (post-subida).
- */
 app.post('/api/files/record-metadata', authenticateToken, async (req, res) => {
     try {
         const { clienteId, storagePath, fileName, fileType, fileSizeKb } = fileMetadataSchema.parse(req.body);
-        const adminId = req.user.id; // ID del usuario autenticado (es numérico)
+        const adminId = req.user.id; 
 
         const { data, error } = await supabase
             .from('archivos_adjuntos')
             .insert({
-                cliente_id: clienteId, // BIGINT
+                cliente_id: clienteId,
                 storage_path: storagePath,
                 file_name: fileName,
                 file_type: fileType,
                 file_size_kb: fileSizeKb,
-                subido_por_admin_id: adminId // SERIAL (int4)
+                subido_por_admin_id: adminId 
             })
             .select()
             .single();
 
         if (error) throw error;
-        res.status(201).json(data); // Devolver el registro creado
-
+        res.status(201).json(data); 
     } catch (error) {
         if (error instanceof z.ZodError) return res.status(400).json({ error: 'Metadatos de archivo inválidos', details: error.errors });
         console.error("Error al registrar metadatos:", error.message);
@@ -476,14 +429,10 @@ app.post('/api/files/record-metadata', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * Endpoint 3: Listar archivos de un cliente.
- */
 app.get('/api/files/:clientId', authenticateToken, async (req, res) => {
     try {
         const validatedId = idSchema.parse(Number(req.params.clientId));
 
-        // Hacemos un join con la tabla 'usuarios' (donde subido_por_admin_id = usuarios.id)
         const { data, error } = await supabase
             .from('archivos_adjuntos')
             .select(`
@@ -507,21 +456,16 @@ app.get('/api/files/:clientId', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * Endpoint 4: Generar URL de descarga pre-firmada.
- */
 app.post('/api/files/generate-download-url', authenticateToken, async (req, res) => {
     try {
         const { storagePath } = fileDownloadSchema.parse(req.body);
 
         const { data, error } = await supabase.storage
             .from('archivos-pacientes')
-            .createSignedUrl(storagePath, 300); // Válida por 300 segundos (5 minutos)
+            .createSignedUrl(storagePath, 300); // Válida por 5 minutos
 
         if (error) throw error;
-
         res.status(200).json({ downloadUrl: data.signedUrl });
-
     } catch (error) {
         if (error instanceof z.ZodError) return res.status(400).json({ error: 'Ruta de archivo inválida', details: error.errors });
         console.error("Error al generar URL de descarga:", error.message);
@@ -534,5 +478,4 @@ app.post('/api/files/generate-download-url', authenticateToken, async (req, res)
 app.listen(port, () => {
     console.log(`Servidor Vintex v3.0 (SCALABLE) corriendo en http://localhost:${port}`);
 });
-
 
