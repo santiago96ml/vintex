@@ -523,3 +523,4 @@ app.listen(port, () => {
     console.log(`Servidor Vintex v3.0 (SCALABLE) corriendo en http://localhost:${port}`);
 });
 
+
