@@ -47,6 +47,18 @@ app.get('/', (req, res) => {
 });
 // ==========================================================
 
+// ==========================================================
+// [FIX] RUTA DE HEALTH CHECK (Para EasyPanel / Plataformas)
+// Responde a pings de "estás vivo?" en la ruta raíz.
+// ==========================================================
+app.get('/', (req, res) => {
+    res.status(200).json({ 
+        status: 'ok', 
+        message: 'Servidor Vintex v3.0 (SCALABLE) está en línea.' 
+    });
+});
+// ==========================================================
+
 // --- MIDDLEWARE DE SEGURIDAD (FASE B) ---
 // Aplicar a todas las rutas API
 const apiLimiter = rateLimit({
