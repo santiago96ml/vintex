@@ -1,10 +1,11 @@
-// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 3.0.0 - SCALABLE) =============
+// ============== SERVIDOR BACKEND VINTEX CLINIC (VERSIÓN 3.0.1 - COMPLETO) =============
 //
 // ARQUITECTURA:
 // - FASE A: Modular (Compatible con frontend modular)
 // - FASE B: Rate Limiting (express-rate-limit) y Carga por Rango (/citas-range)
-// - FASE C: Storage (endpoints de subida/descarga) y Real-time (hooks)
+// - FASE C: Storage (4 endpoints) y Real-time (hooks)
 // - ESQUEMA: Validado para IDs BIGINT/SERIAL (z.number())
+// - FIX: Incluye ruta GET / para Health Check (evita SIGTERM en EasyPanel)
 //
 // =======================================================================================
 
@@ -16,11 +17,12 @@ const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { z } = require('zod');
-const rateLimit = require('express-rate-limit'); // <--- FASE B
+const rateLimit = require('express-rate-limit'); // <--- FASE B (Requiere 'npm install express-rate-limit')
 
 // 2. CONFIGURACIÓN INICIAL
 const app = express();
-const port = process.env.PORT || 3001;
+// El puerto 80 es común en EasyPanel, o 3001 como fallback
+const port = process.env.PORT || 3001; 
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) { console.error("Error: JWT_SECRET debe estar definida."); process.exit(1); }
@@ -33,8 +35,20 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 app.use(cors());
 app.use(express.json());
 
+// ==========================================================
+// [FIX] RUTA DE HEALTH CHECK (Para EasyPanel / Plataformas)
+// Responde a pings de "estás vivo?" en la ruta raíz.
+// ==========================================================
+app.get('/', (req, res) => {
+    res.status(200).json({ 
+        status: 'ok', 
+        message: 'Servidor Vintex v3.0 (SCALABLE) está en línea.' 
+    });
+});
+// ==========================================================
+
 // --- MIDDLEWARE DE SEGURIDAD (FASE B) ---
-// Aplicar a todas las rutas
+// Aplicar a todas las rutas API
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutos
     max: 200, // Límite de 200 peticiones por IP por ventana
@@ -48,7 +62,7 @@ const loginLimiter = rateLimit({
     max: 10, // Límite de 10 intentos de login por IP
     message: 'Demasiados intentos de login, por favor intente de nuevo en 15 minutos.',
 });
-app.use('/api/login', loginLimiter);
+// Nota: El limiter se aplica directamente en la ruta de login
 // --- FIN MIDDLEWARE DE SEGURIDAD ---
 
 const authenticateToken = (req, res, next) => {
@@ -59,7 +73,7 @@ const authenticateToken = (req, res, next) => {
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) { console.warn("Token JWT inválido:", err.message); return res.status(403).json({ error: 'Token inválido' }); }
         
-        // Adjuntamos el payload completo del token (incluyendo user.id)
+        // Adjuntamos el payload completo del token (incluyendo user.id numérico)
         req.user = user; 
         next();
     });
@@ -70,7 +84,7 @@ const authenticateToken = (req, res, next) => {
 // TUS IDs SON 'SERIAL' (int4) o 'BIGINT' (int8), ambos son números.
 const idSchema = z.number().int().positive("El ID debe ser un número positivo.");
 
-// Regex de hora (HH:MM o HH:MM:SS)
+// Regex de hora (HH:MM o HH:MM:SS) - Corregido del server.js original
 const timeRegex = /^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$/;
 // Regex de fecha-hora UTC (ISO-8601)
 const fechaHoraRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z?$/;
@@ -82,11 +96,11 @@ const citaBaseSchema = z.object({
     descripcion: z.string().optional().nullable(),
     estado: z.enum(['programada', 'confirmada', 'cancelada', 'completada', 'no_asistio']).default('programada'),
     duracion_minutos: z.number().int().positive().default(30),
-    doctor_id: idSchema,
+    doctor_id: idSchema, // <--- CORREGIDO (number)
 });
 
 const citaCreateSchema = citaBaseSchema.extend({
-    cliente_id: idSchema.optional().nullable(),
+    cliente_id: idSchema.optional().nullable(), // <--- CORREGIDO (number)
     new_client_name: z.string().optional().nullable(),
     new_client_dni: z.string().optional().nullable(),
     new_client_telefono: z.string().optional().nullable(),
@@ -134,7 +148,8 @@ const fileDownloadSchema = z.object({
 // 5. ENDPOINTS DE LA API
 
 // --- Endpoint de Login ---
-app.post('/api/login', async (req, res) => {
+// Aplicamos el limitador estricto aquí
+app.post('/api/login', loginLimiter, async (req, res) => {
     try {
         const schema = z.object({
             email: z.string().email({ message: "Email inválido" }),
@@ -145,7 +160,7 @@ app.post('/api/login', async (req, res) => {
 
         const { email, password } = validatedData.data;
 
-        // Tu tabla 'usuarios' usa SERIAL, no UUID. Usamos la tabla directamente.
+        // Usamos la tabla 'usuarios' (SERIAL ID) como confirmó tu schema
         const { data: user, error } = await supabase
             .from('usuarios')
             .select('id, nombre, rol, password_hash')
@@ -162,7 +177,7 @@ app.post('/api/login', async (req, res) => {
 
         // Payload del JWT - Incluimos el ID (numérico)
         const tokenPayload = { 
-            id: user.id, // <--- ID Numérico
+            id: user.id, // <--- ID Numérico (de la tabla 'usuarios')
             rol: user.rol, 
             nombre: user.nombre 
         };
@@ -191,7 +206,7 @@ app.get('/api/initial-data', authenticateToken, async (req, res) => {
         ] = await Promise.all([
             supabase.from('doctores').select('id, nombre, especialidad, horario_inicio, horario_fin, activo'),
             supabase.from('clientes').select('id, nombre, telefono, dni, activo, solicitud_de_secretaría'),
-            supabase.from('n8n_chat_histories').select('id, session_id, message')
+            supabase.from('n8n_chat_histories').select('id, session_id, message') // Opcional, si se sigue usando
         ]);
 
         if (doctorsError || clientsError || chatError) {
@@ -237,10 +252,11 @@ app.get('/api/citas-range', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Endpoints de CLIENTES (Sin cambios) ---
+// --- Endpoints de CLIENTES ---
 app.patch('/api/clientes/:id', authenticateToken, async (req, res) => {
     const { id } = req.params;
     try {
+        // Validar que el ID del parámetro es un número
         const validatedId = idSchema.parse(Number(id));
         const validatedData = clienteUpdateSchema.parse(req.body);
 
@@ -256,8 +272,11 @@ app.patch('/api/clientes/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Endpoints de DOCTORES (Corregido timeRegex) ---
+// --- Endpoints de DOCTORES ---
 app.post('/api/doctores', authenticateToken, async (req, res) => {
+    // Solo Admin puede crear doctores (ejemplo de ROL)
+    if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Acceso denegado.' });
+    
     try {
         const validatedData = doctorSchema.parse(req.body);
         const { data, error } = await supabase.from('doctores').insert(validatedData).select().single();
@@ -271,6 +290,9 @@ app.post('/api/doctores', authenticateToken, async (req, res) => {
 });
 
 app.patch('/api/doctores/:id', authenticateToken, async (req, res) => {
+    // Solo Admin puede editar doctores
+    if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Acceso denegado.' });
+
     const { id } = req.params;
     try {
         const validatedId = idSchema.parse(Number(id));
@@ -289,13 +311,13 @@ app.patch('/api/doctores/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Endpoints de CITAS (Corregido para BIGINT) ---
+// --- Endpoints de CITAS ---
 app.post('/api/citas', authenticateToken, async (req, res) => {
     try {
         const validatedData = citaCreateSchema.parse(req.body);
         let clienteId = validatedData.cliente_id;
 
-        // Lógica para crear nuevo cliente
+        // Lógica para crear nuevo cliente (si aplica)
         if (!clienteId && validatedData.new_client_name && validatedData.new_client_dni) {
             const { data: newClient, error: clientError } = await supabase
                 .from('clientes')
@@ -378,23 +400,23 @@ app.delete('/api/citas/:id', authenticateToken, async (req, res) => {
 
 
 // ============================================
-// NUEVAS RUTAS: GESTIÓN DE ARCHIVOS (FASE C - 100% COMPLETO)
+// ENDPOINTS DE ARCHIVOS (FASE C - 100% COMPLETO)
 // ============================================
 
 /**
  * Endpoint 1: Generar URL de subida pre-firmada.
- * El frontend pide permiso para subir un archivo.
  */
 app.post('/api/files/generate-upload-url', authenticateToken, async (req, res) => {
     try {
         const { fileName, fileType, clienteId } = fileUploadUrlSchema.parse(req.body);
 
-        // El ID del admin/usuario que está autenticado
+        // El ID del admin/usuario que está autenticado (viene del JWT)
         const adminId = req.user.id; 
         const filePath = `privado/cliente_${clienteId}/admin_${adminId}/${Date.now()}-${fileName}`;
 
+        // Bucket: 'archivos-pacientes'
         const { data, error } = await supabase.storage
-            .from('archivos-pacientes') // Nombre de nuestro bucket
+            .from('archivos-pacientes') 
             .createSignedUploadUrl(filePath, 60); // Válida por 60 segundos
 
         if (error) throw error;
@@ -412,23 +434,22 @@ app.post('/api/files/generate-upload-url', authenticateToken, async (req, res) =
 });
 
 /**
- * Endpoint 2: Registrar metadatos.
- * El frontend llama a esto DESPUÉS de que la subida a Storage fue exitosa.
+ * Endpoint 2: Registrar metadatos (post-subida).
  */
 app.post('/api/files/record-metadata', authenticateToken, async (req, res) => {
     try {
         const { clienteId, storagePath, fileName, fileType, fileSizeKb } = fileMetadataSchema.parse(req.body);
-        const adminId = req.user.id; // ID del usuario autenticado
+        const adminId = req.user.id; // ID del usuario autenticado (es numérico)
 
         const { data, error } = await supabase
             .from('archivos_adjuntos')
             .insert({
-                cliente_id: clienteId,
+                cliente_id: clienteId, // BIGINT
                 storage_path: storagePath,
                 file_name: fileName,
                 file_type: fileType,
                 file_size_kb: fileSizeKb,
-                subido_por_admin_id: adminId 
+                subido_por_admin_id: adminId // SERIAL (int4)
             })
             .select()
             .single();
@@ -445,12 +466,12 @@ app.post('/api/files/record-metadata', authenticateToken, async (req, res) => {
 
 /**
  * Endpoint 3: Listar archivos de un cliente.
- * El frontend llama a esto para poblar el modal de archivos.
  */
 app.get('/api/files/:clientId', authenticateToken, async (req, res) => {
     try {
         const validatedId = idSchema.parse(Number(req.params.clientId));
 
+        // Hacemos un join con la tabla 'usuarios' (donde subido_por_admin_id = usuarios.id)
         const { data, error } = await supabase
             .from('archivos_adjuntos')
             .select(`
@@ -463,10 +484,6 @@ app.get('/api/files/:clientId', authenticateToken, async (req, res) => {
                 admin:usuarios (nombre) 
             `)
             .eq('cliente_id', validatedId);
-            // NOTA: 'admin:usuarios (nombre)' funciona si tu FK 'subido_por_admin_id'
-            // apunta a 'usuarios(id)'. Si apunta a 'administradores(id)', 
-            // cambia 'admin:usuarios (nombre)' por 'admin:administradores (nombre)'.
-            // Basado en tu schema, debe ser 'usuarios'.
 
         if (error) throw error;
         res.status(200).json(data);
@@ -480,7 +497,6 @@ app.get('/api/files/:clientId', authenticateToken, async (req, res) => {
 
 /**
  * Endpoint 4: Generar URL de descarga pre-firmada.
- * El frontend pide permiso para descargar un archivo privado.
  */
 app.post('/api/files/generate-download-url', authenticateToken, async (req, res) => {
     try {
